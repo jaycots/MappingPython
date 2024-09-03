@@ -1,0 +1,115 @@
+import pandas as pd
+import folium
+from folium.plugins import MarkerCluster, HeatMap
+import requests
+from time import sleep
+import re
+
+# Your Positionstack API key
+key = "c76238299a86576620f429c6cfc60865"
+
+# Read the CSV file
+df = pd.read_csv('data2.csv')
+
+# Create a map
+m = folium.Map(location=[54.5, -4], zoom_start=5)
+
+# Add markers for postcodes
+markers = MarkerCluster(name='Markers')
+heatmap_data = []
+chd_markers = MarkerCluster(name='CHD Postcodes')
+
+# Create a cache to store geocoding results
+geocode_cache = {}
+
+# Regular expression for valid UK postcodes
+uk_postcode_regex = r"^[A-Z]{1,2}[0-9][A-Z0-9]? ?[0-9][A-Z]{2}$"
+
+successfully_geocoded = 0
+
+# Process cached postcodes first
+for index, row in df.iterrows():
+    postcode = row['postcodec']
+    if postcode in geocode_cache:
+        lat, lng = geocode_cache[postcode]
+        print(f"Using cached coordinates for {postcode}: {lat}, {lng}")
+        successfully_geocoded += 1
+
+        # Add marker to appropriate layer
+        if row['Delivery Type'] == 'CHD':
+            folium.Marker(
+                location=[lat, lng],
+                popup=postcode,
+                icon=folium.Icon(color='green')
+            ).add_to(chd_markers)
+        else:
+            folium.Marker(
+                location=[lat, lng],
+                popup=postcode,
+                icon=folium.Icon(color='blue')
+            ).add_to(markers)
+
+        heatmap_data.append([lat, lng])
+
+# Process remaining postcodes (not in cache)
+for index, row in df.iterrows():
+    postcode = row['postcodec']
+    if postcode not in geocode_cache:
+        # Geocode the postcode using Positionstack
+        url = f"http://api.positionstack.com/v1/forward?access_key={key}&query={postcode}"
+
+        # Retry logic with timeout handling
+        max_retries = 3
+        retries = 0
+        while retries < max_retries:
+            try:
+                response = requests.get(url, timeout=10)
+                response.raise_for_status()
+                break
+            except requests.exceptions.RequestException as e:
+                retries += 1
+                print(f"Request failed: {e}. Retrying in 5 seconds...")
+                sleep(5)
+
+        if retries == max_retries:
+            print(f"Failed to geocode postcode: {postcode} after multiple retries.")
+            continue
+
+        data = response.json()
+        if len(data['data']) > 0:
+            lat = data['data'][0]['latitude']
+            lng = data['data'][0]['longitude']
+            country_code = data['data'][0]['country_code']
+
+            # Store result in cache
+            geocode_cache[postcode] = (lat, lng)
+
+            if country_code in ['GB', 'IE'] or re.match(uk_postcode_regex, postcode):
+                print(f"Successfully geocoded {postcode}: {lat}, {lng}")
+                successfully_geocoded += 1
+
+                # Add marker to appropriate layer
+                if row['Delivery Type'] == 'CHD':
+                    folium.Marker(
+                        location=[lat, lng],
+                        popup=postcode,
+                        icon=folium.Icon(color='green')
+                    ).add_to(chd_markers)
+                else:
+                    folium.Marker(
+                        location=[lat, lng],
+                        popup=postcode,
+                        icon=folium.Icon(color='blue')
+                    ).add_to(markers)
+                heatmap_data.append([lat, lng])
+            else:
+                print(f"Postcode {postcode} is not in the UK or Ireland. Skipping...")
+                continue
+
+# Add the markers layers to the map
+markers.add_to(m)
+chd_markers.add_to(m)  # Add CHD markers layer
+
+# Add warehouse markers with truck icons and radius
+
+print(data)
